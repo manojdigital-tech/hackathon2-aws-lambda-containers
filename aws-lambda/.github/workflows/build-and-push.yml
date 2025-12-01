@@ -1,0 +1,56 @@
+name: Build & Push Docker to ECR
+on:
+  push:
+    paths:
+      - "app/**"
+      - ".github/workflows/build-and-push.yml"
+  workflow_dispatch:
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ap-southeast-2
+      ORDERS_REPO: ${{ vars.ECR_ORDERS_REPO }}
+      PAYMENTS_REPO: ${{ vars.ECR_PAYMENTS_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push orders
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app/orders
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ORDERS_REPO }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ORDERS_REPO }}:${{ github.sha }}
+          platforms: linux/amd64
+        id: build_orders
+
+      - name: Build & Push payments
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app/payments
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PAYMENTS_REPO }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PAYMENTS_REPO }}:${{ github.sha }}
+          platforms: linux/amd64
+        id: build_payments
+
+      - name: Export image digests
+        run: |
+          echo "ORDERS_DIGEST=${{ steps.build_orders.outputs.digest }}" >> $GITHUB_ENV
+          echo "PAYMENTS_DIGEST=${{ steps.build_payments.outputs.digest }}" >> $GITHUB_ENV

@@ -1,0 +1,60 @@
+name: Deploy Lambda from ECR digest
+on:
+  workflow_dispatch:
+    inputs:
+      function:
+        description: "orders | payments"
+        required: true
+        default: "orders"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ap-southeast-2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve ECR repo & digest
+        id: vars
+        run: |
+          if [ "${{ github.event.inputs.function }}" = "orders" ]; then
+            echo "REPO=${{ vars.ECR_ORDERS_REPO }}" >> $GITHUB_ENV
+            echo "FUNCTION_NAME=${{ vars.LAMBDA_ORDERS_NAME }}" >> $GITHUB_ENV
+          else
+            echo "REPO=${{ vars.ECR_PAYMENTS_REPO }}" >> $GITHUB_ENV
+            echo "FUNCTION_NAME=${{ vars.LAMBDA_PAYMENTS_NAME }}" >> $GITHUB_ENV
+          fi
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "REGISTRY=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_ENV
+
+      - name: Read latest digest from ECR (latest tag)
+        id: digest
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "$REPO" \
+            --query 'imageDetails[?contains(imageTags, `latest`)].imageDigest' \
+            --output text | head -n1)
+          echo "DIGEST=$DIGEST" >> $GITHUB_ENV
+
+      - name: Update Lambda code to immutable digest
+        run: |
+          IMAGE_URI="${REGISTRY}/${REPO}@${DIGEST}"
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_NAME" \
+            --image-uri "$IMAGE_URI" \
+            --publish
+
+      - name: Output new version
+        run: |
+          aws lambda get-function --function-name "$FUNCTION_NAME" \
+            --query 'Configuration.[Version,LastModified,ImageUri]' --output table
